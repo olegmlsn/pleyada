@@ -1,4 +1,5 @@
 require 'net/https'
+require 'rexml/document'
 
 class Pleyada
   def initialize(login, password)
@@ -26,20 +27,43 @@ class Pleyada
     request(method: 'Mkcol', path: path)
   end
 
+  def copy(origin_path, dest_path)
+    request(method: 'Copy', path: origin_path, dest_path: dest_path)
+  end
+
+  def move(origin_path, dest_path)
+    request(method: 'Move', path: origin_path, dest_path: dest_path)
+  end
+
   def delete(path)
     request(method: 'Delete', path: path)
   end
 
+  def propfind(path, type)
+    request(method: 'Propfind', path: path, propfind_type: type)
+  end
+
   protected
+
+  def xml_parse(source_xml)
+    xml = REXML::Document.new(source_xml)
+    if not xml.get_elements('/d:multistatus/d:response/d:propstat/d:prop/d:quota-available-bytes').empty?
+      rslt = {}
+      rslt[:available] = xml.get_elements('/d:multistatus/d:response/d:propstat/d:prop/d:quota-available-bytes')[0].text
+      rslt[:used] = xml.get_elements('/d:multistatus/d:response/d:propstat/d:prop/d:quota-used-bytes')[0].text
+    else
+      rslt = []
+      tmp_elm = xml.get_elements('/d:multistatus/d:response/d:href')
+      tmp_elm.each { |element| rslt << element.text }
+    end
+    return rslt
+  end
 
   def prep_result(result)
     resp = false
     head_ar = [Net::HTTPCreated, Net::HTTPOK]
     head_ar.each do |head|
-      puts head
-      puts result
       if result.is_a?(head)
-        puts 'ok'
         if result.body.empty?
           puts result.body.empty?
           resp = true
@@ -47,82 +71,40 @@ class Pleyada
           resp = result.body
         end
       elsif result.is_a?(Net::HTTPMultiStatus)
-        #TODO XML parsing
-        resp = body
+        resp = xml_parse(result.body)
       end
     end
     return resp
-    # if result.is_a?(Net::HTTPCreated) or result.is_a?(Net::HTTPOK) or result.is_a?(Net::HTTPMultiStatus)
-    #   if result.body.empty?
-    #     return true
-    #   else
-    #     return body
-    #   end
-    # elsif
-    #   return false
-    # end
   end
 
-  #TODO add some magick
+
   def request(options)
 
     req = eval "Net::HTTP::#{options[:method]}.new('#{options[:path]}')"
     req['Host'] = 'webdav.yandex.ru'
     req.basic_auth(@login, @password)
 
-    case options[:method]
-    when 'Put' then
+    if options[:method] == 'Put'
       req.content_type = 'application/octet-stream'
       req.content_length = options[:length]
       req.body_stream = options[:stream]
+    elsif options[:method] == 'Copy' or options[:method] == 'Move'
+      req['Destination'] = options[:dest_path]
+    elsif options[:method] == 'Propfind'
+      if options[:propfind_type] == :space
+        req['Depth'] = 0
+        xml = REXML::Document.new
+        xml.add_element("D:propfind", {"xmlns:D" => "DAV:"})
+        xml.root.add_element("D:prop")
+        xml.root.elements[1] << REXML::Element.new("D:quota-available-bytes")
+        xml.root.elements[1] << REXML::Element.new("D:quota-used-bytes")
+        req.body = xml.to_s
+      elsif options[:propfind_type] == :contents
+        req['Depth'] = 1
+      end
     end
     
     result = @http.request(req)
     prep_result(result)
-  #   case options[:method]
-  #   when 'PUT' then
-  #     req = Net::HTTP::Put.new(options[:path])
-  #     req['Host'] = 'webdav.yandex.ru'
-  #     req.content_type = 'application/octet-stream'
-  #     req.basic_auth(@login, @password)
-  #     req.content_length = options[:length]
-  #     req.body_stream = options[:stream]
-  #     result = @http.request(req)
-  #     if result.is_a?(Net::HTTPCreated)
-  #       return true
-  #     else
-  #       return false
-  #     end
-  #   when 'GET' then
-  #     req = Net::HTTP::Get.new(options[:path])
-  #     req['Host'] = 'webdav.yandex.ru'
-  #     req.basic_auth(@login, @password)
-  #     result = @http.request(req)
-  #     if result.is_a?(Net::HTTPOK)
-  #       return result.body
-  #     else
-  #       return false
-  #     end
-  #   when 'MKCOL' then
-  #     req = Net::HTTP::Mkcol.new(options[:path])
-  #     req['Host'] = 'webdav.yandex.ru'
-  #     req.basic_auth(@login, @password)
-  #     result = @http.request(req)
-  #     if result.is_a?(Net::HTTPCreated)
-  #       return true
-  #     else
-  #       return false
-  #     end
-  #   when 'DELETE' then
-  #     req = Net::HTTP::Delete.new(options[:path])
-  #     req['Host'] = 'webdav.yandex.ru'
-  #     req.basic_auth(@login, @password)
-  #     result = @http.request(req)
-  #     if result.is_a?(Net::HTTPOK)
-  #       return true
-  #     else
-  #       return false
-  #     end
-  #   end
   end
 end 
